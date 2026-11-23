@@ -3,6 +3,8 @@
 
 use super::*;
 use std::io::{Read, Write};
+use std::rc::Rc;
+use unemu_core_api::test_support::{MemoryStorage, ScriptedMachine};
 use unemu_core_api::{
     AudioDescription, DisplayDescription, Error, Features, Finished, Frame, FrameArea,
     InputPortDescription, Key, MachineDescription, MessageLevel, NewMedium, Outputs, PadControl,
@@ -856,9 +858,6 @@ fn usage_before_the_first_completed_picture_is_allowed() {
 
 #[test]
 fn loading_a_state_before_the_first_picture_discards_a_later_cached_picture() {
-    use std::rc::Rc;
-    use unemu_core_api::test_support::{MemoryStorage, ScriptedMachine};
-
     let machine = ScriptedMachine::new(Rc::new(MemoryStorage::new())).without_initial_picture();
     let mut session = Session::new(Box::new(machine), DisplayId(0), &mut io::sink()).unwrap();
     let mut state = Vec::new();
@@ -876,6 +875,167 @@ fn loading_a_state_before_the_first_picture_discards_a_later_cached_picture() {
     session.advance_fully(ms(2)).unwrap();
     assert!(session.picture().is_some());
     assert!(session.machine().now().0 > 0);
+}
+
+/// Keep real state loading and reset behavior while refusing a chosen input.
+struct RefusingInput {
+    machine: ScriptedMachine,
+    refused: Option<InputEvent>,
+    attempts: Vec<InputEvent>,
+}
+
+impl Machine for RefusingInput {
+    fn description(&self) -> &MachineDescription {
+        self.machine.description()
+    }
+
+    fn now(&self) -> Ticks {
+        self.machine.now()
+    }
+
+    fn steps(&self) -> u64 {
+        self.machine.steps()
+    }
+
+    fn status(&self) -> Status {
+        self.machine.status()
+    }
+
+    fn run(&mut self, limit: RunLimit) -> Result<Stop, Error> {
+        self.machine.run(limit)
+    }
+
+    fn frame(&mut self, display: DisplayId) -> Result<Frame<'_>, Error> {
+        self.machine.frame(display)
+    }
+
+    fn drain_audio(&mut self, out: &mut Vec<[i16; 2]>) -> Result<(), Error> {
+        self.machine.drain_audio(out)
+    }
+
+    fn set_outputs(&mut self, outputs: Outputs) {
+        self.machine.set_outputs(outputs);
+    }
+
+    fn input(&mut self, event: InputEvent) -> Result<(), Error> {
+        self.attempts.push(event.clone());
+        if self.refused.as_ref() == Some(&event) {
+            return Err(Error::new(ErrorKind::Usage, "scripted input refusal"));
+        }
+        self.machine.input(event)
+    }
+
+    fn slot_states(&mut self) -> Vec<SlotState> {
+        self.machine.slot_states()
+    }
+
+    fn add_medium(&mut self, slot: SlotId, medium: NewMedium<'_>) -> Result<usize, Error> {
+        self.machine.add_medium(slot, medium)
+    }
+
+    fn change_medium(&mut self, slot: SlotId, action: MediaAction) -> Result<(), Error> {
+        self.machine.change_medium(slot, action)
+    }
+
+    fn reset(&mut self, kind: ResetKind) -> Result<(), Error> {
+        self.machine.reset(kind)
+    }
+
+    fn state_identity(&self) -> Option<String> {
+        self.machine.state_identity()
+    }
+
+    fn save_state(&mut self, out: &mut dyn Write) -> Result<(), Error> {
+        self.machine.save_state(out)
+    }
+
+    fn load_state(&mut self, state: &mut dyn Read) -> Result<(), Error> {
+        self.machine.load_state(state)
+    }
+
+    fn finish(&mut self) -> Result<Finished, Error> {
+        self.machine.finish()
+    }
+
+    fn drain_messages(&mut self, out: &mut Vec<Message>) {
+        self.machine.drain_messages(out);
+    }
+}
+
+fn refusing_input_session() -> Session<RefusingInput> {
+    let machine = RefusingInput {
+        machine: ScriptedMachine::new(Rc::new(MemoryStorage::new())),
+        refused: None,
+        attempts: Vec::new(),
+    };
+    let mut session = Session::new(Box::new(machine), DisplayId(0), &mut io::sink()).unwrap();
+    session.pointer_at(Some((123, 456)));
+    session.mouse.pointer_inside(true);
+    session.mouse_button_with_grab(MouseButton::Left, Pressed, || Ok(()));
+    session.mouse_button_with_grab(MouseButton::Left, Released, || Ok(()));
+    assert!(session.mouse.captured());
+    session.machine.attempts.clear();
+    session
+}
+
+#[test]
+fn release_all_refusal_during_load_state_keeps_the_session_stopped() {
+    assert_load_input_refusal(InputEvent::ReleaseAll);
+}
+
+#[test]
+fn pointer_refusal_during_load_state_keeps_the_session_stopped() {
+    assert_load_input_refusal(InputEvent::pointer_position(PortId(2), Some((123, 456))));
+}
+
+fn assert_load_input_refusal(refused: InputEvent) {
+    let mut session = refusing_input_session();
+    let mut state = Vec::new();
+    session.save_state(&mut state).unwrap();
+    session.machine.refused = Some(refused.clone());
+
+    session.load_state(&mut state.as_slice(), ms(1)).unwrap();
+
+    assert_eq!(session.machine.status(), Status::Ready);
+    assert_eq!(session.machine.attempts.last(), Some(&refused));
+    assert!(!session.mouse.captured());
+    assert!(session.mouse.take_events().is_empty());
+    assert!(!session.running);
+    assert!(!session.halted);
+    let error = session.error.take().unwrap();
+    let error = error.downcast_ref::<Error>().unwrap();
+    assert_eq!(error.kind, ErrorKind::Usage);
+    assert_eq!(error.to_string(), "scripted input refusal");
+
+    let steps = session.machine.steps();
+    session.advance_fully(ms(20)).unwrap();
+    session.recapture_pointer();
+    assert_eq!(session.machine.steps(), steps);
+    assert!(!session.running);
+    assert!(!session.mouse.captured());
+}
+
+#[test]
+fn input_refusal_during_hard_reset_keeps_the_session_stopped() {
+    for halted in [false, true] {
+        let mut session = refusing_input_session();
+        if halted {
+            session.machine.machine.stop_next(Stop::Halted);
+            session.advance_fully(ms(1)).unwrap();
+            assert!(session.halted);
+        }
+        session.machine.refused = Some(InputEvent::pointer_position(PortId(2), Some((123, 456))));
+
+        session
+            .reset(ResetKind::Hard, ms(2), &mut io::sink())
+            .unwrap();
+
+        assert_eq!(session.machine.status(), Status::Ready);
+        assert!(session.error.is_some());
+        assert!(!session.running);
+        assert!(!session.halted);
+        assert!(!session.mouse.captured());
+    }
 }
 
 #[test]

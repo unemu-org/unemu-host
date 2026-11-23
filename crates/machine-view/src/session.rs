@@ -544,7 +544,7 @@ impl<M: Machine + ?Sized> Session<M> {
             self.pad_keys.clear();
             let status = self.machine.status();
             self.halted = status == Status::Halted;
-            self.running = status == Status::Ready;
+            self.running = status == Status::Ready && self.error.is_none();
             self.pacing.resync(elapsed, self.machine.now().0);
         }
         Ok(())
@@ -603,7 +603,7 @@ impl<M: Machine + ?Sized> Session<M> {
         self.forward_pointer();
         let status = self.machine.status();
         self.halted = status == Status::Halted;
-        self.running = status == Status::Ready;
+        self.running = status == Status::Ready && self.error.is_none();
         if !self.running {
             self.release_pointer();
         }
