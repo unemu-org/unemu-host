@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The session over a whole core: the scripted test core, started as the
-//! generic launch path starts one and driven through the contract alone
-//! (core-contract.md §13.3, the tests of `machine-view`).
+//! generic launch path starts one and driven through the contract alone.
 
 use super::*;
 use crate::screen::{self, Rect};

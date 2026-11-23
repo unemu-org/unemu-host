@@ -10,9 +10,9 @@
 //! nothing and never reaches a machine.
 //!
 //! [`name`] and [`by_name`] give each usage the contract names a stable name
-//! for files people keep, such as the pad bindings of a preferences file
-//! (core-contract.md §13.3): the name of the contract's constant (`A`,
-//! `ARROW_UP`, `SHIFT_RIGHT`), which depends on neither the toolkit nor the
+//! for files people keep, such as the pad bindings of a preferences file:
+//! the name of the contract's constant (`A`, `ARROW_UP`, `SHIFT_RIGHT`),
+//! which depends on neither the toolkit nor the
 //! host's layout.
 
 use unemu_core_api::Key;

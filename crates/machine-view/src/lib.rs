@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The desktop's session of one running machine, over the front-end contract
-//! alone; see `backlog/docs/architecture.md` § Observation and presentation and
-//! `backlog/docs/design/core-contract.md` §5 and §8.
+//! A host session of one running machine, over the core contract alone.
 //!
 //! [`session::Session`] drives a [`unemu_core_api::Machine`]: it paces runs
 //! against the host clock ([`pacing`]), plays the drained sound at whatever
@@ -19,8 +17,8 @@
 //! Only the binary owns a window and a host audio stream; the session and
 //! its tests stay headless. The host clock is read only here, for pacing and
 //! slice deadlines, and never enters the machine. The crate knows no
-//! platform, and the boundary check keeps it so (layer `neutral`,
-//! `scripts/crate-boundaries.sh`).
+//! emulated platform. The dependency guard keeps cores and front ends out
+//! of this crate's dependencies.
 
 pub mod host_audio;
 pub mod keys;

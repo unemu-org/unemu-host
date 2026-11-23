@@ -6,8 +6,8 @@
 //! ([`unemu_core_api::MachineDescription::clock`]); for an AT that is the
 //! timer input, the 14.31818 MHz oscillator divided by twelve (IBM Personal
 //! Computer AT Technical Reference (March 1984), System Board, "System Timers"
-//! and "Oscillator"). See `backlog/docs/architecture.md` § Core boundary and host
-//! timing for rounding, overload and instruction-boundary limits.
+//! and "Oscillator"). Tick targets preserve fractional rates, bound catch-up
+//! debt and leave instruction boundaries to the machine.
 
 use std::time::Duration;
 use unemu_core_api::Rate;

@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Fork pull requests use the same read-only token and need no secrets.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: ""
+  RUSTDOCFLAGS: ""
+
+jobs:
+  check:
+    name: Checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Linux audio headers
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y pkg-config libasound2-dev
+      - name: Install Nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - name: Toolchain
+        run: nix develop --no-update-lock-file --command rustc --version
+      - name: Format
+        run: nix develop --no-update-lock-file --command cargo fmt --check
+      - name: Clippy
+        run: nix develop --no-update-lock-file --command cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: Tests (including test-support)
+        run: nix develop --no-update-lock-file --command cargo test --locked --workspace --all-features
+      - name: Layer guard self-test
+        run: nix develop --no-update-lock-file --command bash scripts/layer-guard.sh --self-test
+      - name: Layer guard
+        run: nix develop --no-update-lock-file --command bash scripts/layer-guard.sh
+      - name: Publication guard self-test
+        run: nix develop --no-update-lock-file --command bash scripts/publication-guard.sh --self-test
+      - name: Publication guard
+        run: nix develop --no-update-lock-file --command bash scripts/publication-guard.sh
+      - name: Licences, advisories and dependency sources
+        run: nix develop --no-update-lock-file --command cargo deny --all-features check

@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! A scripted core for the front end's tests: it implements the whole core
-//! contract and emulates nothing (core-contract.md §13.3, "Testing before a
-//! NES exists").
+//! A scripted core for consumers' tests: it implements the whole core
+//! contract and emulates nothing.
 //!
 //! The front end's crates test against [`TestCore`] instead of a real
-//! platform, so none of them names an emulator crate (core-contract.md
-//! §7.3). It depends on the contract alone, forbids unsafe code and touches
-//! nothing of the host: what it reads comes through the contract's
+//! platform, so none of them names an emulator crate. It depends on the
+//! contract alone, forbids unsafe code and touches nothing of the host:
+//! what it reads comes through the contract's
 //! [`ContentSource`](unemu_core_api::ContentSource) and what outlives a run
 //! goes to records of the contract's [`Storage`](unemu_core_api::Storage).
 //! It is in no program's list of cores.

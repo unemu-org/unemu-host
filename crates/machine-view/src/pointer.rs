@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Host pointer capture for a machine's relative pointing device (backlog/docs/architecture.md, Observation and presentation),
+//! Host pointer capture for a machine's relative pointing device,
 //! and the uncaptured host pointer for an absolute one ([`Aiming`]).
 //!
 //! A machine with a relative pointer captures on a client-area click, and
 //! that click is swallowed. Command+G on macOS (Ctrl+Alt+G elsewhere), focus
 //! loss and suspension release capture and the guest's buttons. Raw host
 //! motion uses one host unit per device count, positive Y up, with carried
-//! fractions; the machine owns coalescing, back-pressure and overflow. See
-//! `backlog/docs/architecture.md` § Core boundary and host timing for capture, release and
-//! boundary ordering.
+//! fractions; the machine owns coalescing, back-pressure and overflow.
+//! Capture and release queue guest events for the next run boundary.
 
 use std::collections::BTreeSet;
 use unemu_core_api::{InputEvent, PortId};
@@ -226,9 +225,9 @@ impl PointerCapture {
 }
 
 /// The host pointer over the screen for a machine's absolute pointing device,
-/// a light gun, a light pen or a touch screen (core-contract.md §13.3, "The
-/// absolute pointer"). Nothing is captured: the view says where the pointer
-/// is on the picture ([`crate::screen::ScreenLayout::pointer_position`]) and
+/// a light gun, a light pen or a touch screen. Nothing is captured: the
+/// view says where the pointer is on the picture
+/// ([`crate::screen::ScreenLayout::pointer_position`]) and
 /// which clicks are meant for the machine.
 ///
 /// A place is sent only when it changes, and `None` when the pointer leaves

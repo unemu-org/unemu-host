@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Host playback of a machine's drained sound; no hardware is modelled here.
 //!
-//! See `backlog/docs/architecture.md` § Core boundary and host timing. Only the window explicitly
-//! opens a device. Playback consumes completed virtual-time frames and cannot
-//! change the machine, its clock or host-clock pacing policy. Audio
+//! Only the window explicitly opens a device. Playback consumes completed
+//! virtual-time frames and cannot change the machine, its clock or
+//! host-clock pacing policy. Audio
 //! observations feed a 200 ms stereo ring at run boundaries; callbacks use
 //! silence on underrun and drop oldest frames on overrun. Playback prefills
 //! 50 ms and trims above 70 ms; recoverable host/source errors leave the
 //! window running.
 //!
 //! A machine drains its sound at the exact rate its description states, any
-//! rate from 8 000 to 192 000 frames a second ([`SOURCE_RATES`];
-//! core-contract.md §13.2, "Sound at any rate"). The device plays whatever
-//! rate the host offers, and the producer converts between the two by linear
+//! rate from 8 000 to 192 000 frames a second ([`SOURCE_RATES`]). The device
+//! plays whatever rate the host offers, and the producer converts between
+//! the two by linear
 //! interpolation at an exact rational position. A 48 kHz source, the PC's,
 //! takes the arithmetic it took when it was the only rate.
 use cpal::{
@@ -60,7 +60,7 @@ use std::{
 };
 
 /// Linear interpolation carries an exact rational position across input blocks.
-/// Only the producer uses this state; see backlog/docs/architecture.md, Core boundary and host timing for quality limits.
+/// Only the producer uses this state, so callbacks consume ready frames.
 ///
 /// With the source at `n/d` frames a second and the device at `r`, one input
 /// interval is `r·d` units of position and one output interval is `n`. Per

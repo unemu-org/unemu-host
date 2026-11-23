@@ -31,8 +31,8 @@
 //! focus loss, dialogs, pause and drop, reinstalled after macOS switched it off
 //! for answering too slowly, and asked for at most once per guest focus when
 //! macOS refuses it. The tap itself is a thin macOS shell around these two
-//! (`macos_keys`), since no test can create one. See `the machine guide in unemupc`
-//! § macOS system shortcuts in games.
+//! (`macos_keys`), since no test can create one. The shell explains the
+//! Accessibility permission when the user opts in.
 
 use winit::{event::ElementState, keyboard::KeyCode};
 

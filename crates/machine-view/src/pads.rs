@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Game pads from the host keyboard: which key works which control of which
-//! player (core-contract.md §13.2, "Pads", and §13.3, "Pads from the
-//! keyboard").
+//! player, using only the controls and ports named by the contract.
 //!
 //! The table is front-end data: no core sees it, and the same table serves
 //! every core. Players are the machine's ports of kind `Pad` in ascending

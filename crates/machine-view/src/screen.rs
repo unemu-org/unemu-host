@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Where a machine's picture goes in a panel of the window, and back from a
-//! point of the panel to a place on the picture (core-contract.md §13.3,
-//! "The picture" and "The absolute pointer").
+//! point of the panel to a place on the picture for an absolute pointer.
 //!
 //! A view asks [`layout`] for the part of the picture to draw and the
 //! rectangle to draw it in, and asks the result for the place under the host

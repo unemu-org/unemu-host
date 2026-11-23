@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The paced session of one machine in the desktop window (backlog/docs/architecture.md,
-//! Observation and presentation; core-contract.md §5).
+//! The paced session of one machine in a host window, over the contract.
 //!
 //! The session reads a monotonic host clock for cadence and slice deadlines;
 //! [`crate::pacing`] converts elapsed time to bounded tick targets at the rate
@@ -21,21 +20,20 @@
 //! release capture and the guest's buttons. The window tries Locked then
 //! Confined, hides the cursor and shows the release chord in its status bar.
 //! Failed grabs leave input free; application exit restores the pointer.
-//! Focus loss releases all held keys; stopped-machine input is ignored. See
-//! `backlog/docs/architecture.md` § Core boundary and host timing.
+//! Focus loss releases all held keys; stopped-machine input is ignored.
 //!
 //! A machine with a keyboard port gets the guest's keys there. A machine
 //! without one but with pad ports gets its pads from the keys bound in
-//! [`Session::set_pad_bindings`] (core-contract.md §13.3, "Pads from the
-//! keyboard"): a bound key becomes a pad event for its player's port, if
-//! that port lists the control, and nothing else; host repeats are dropped,
+//! [`Session::set_pad_bindings`]: a bound key becomes a pad event for its
+//! player's port, if that port lists the control, and nothing else; host
+//! repeats are dropped,
 //! and a control stays held while any of its keys is. Host chords are taken
 //! first, as for a keyboard.
 //!
 //! A machine with an absolute pointer on the shown display is aimed at, not
-//! captured ([`Session::pointer_at`], core-contract.md §13.3, "The absolute
-//! pointer"): the view says where the host pointer is on the picture, with
-//! the geometry of [`crate::screen`], and the session sends the place when
+//! captured ([`Session::pointer_at`]): the view says where the host pointer
+//! is on the picture, with the geometry of [`crate::screen`], and the
+//! session sends the place when
 //! it changes and `None` when the pointer leaves the screen or the window
 //! loses focus. The machine's resets ([`Session::reset`]) and saved states
 //! ([`Session::save_state`], [`Session::load_state`]) go through the session,
