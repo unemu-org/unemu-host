@@ -13,7 +13,7 @@ publish = false
 
 [workspace.dependencies]
 # The core contract, pinned by exact revision like every unemu repository.
-unemu-core-api = { version = "0.4", git = "https://github.com/unemu-org/unemu-core-api", rev = "563f3089f2ad26a189636624faa4696b2bc79d07" }
+unemu-core-api = { version = "0.5", git = "https://github.com/unemu-org/unemu-core-api", rev = "316dd2a1f429cc3ef37a2bed203e89b2160079ff" }
 winit = "0.30"
 cpal = "=0.18.2"
 

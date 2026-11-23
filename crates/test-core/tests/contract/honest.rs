@@ -36,7 +36,7 @@ battery
 #[test]
 fn the_core_states_contract_0_4_and_one_platform_that_opens_scripts() {
     let description = CORE.description();
-    assert_eq!(description.implements, ContractVersion::new(0, 4));
+    assert_eq!(description.implements, ContractVersion::new(0, 5));
     assert!(CONTRACT.drives(description.implements));
     assert_eq!(description.platforms.len(), 1);
     let platform = &description.platforms[0];
