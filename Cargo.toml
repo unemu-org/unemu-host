@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[workspace]
+resolver = "2"
+members = ["crates/machine-view", "crates/test-core"]
+
+[workspace.package]
+version = "0.0.4"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+rust-version = "1.99"
+repository = "https://github.com/unemu-org/unemu-host"
+publish = false
+
+[workspace.dependencies]
+# The core contract, pinned by exact revision like every unemu repository.
+unemu-core-api = { version = "0.3", git = "https://github.com/unemu-org/unemu-core-api", rev = "afba6e6b217946eb57b9556e79a30bbe53c90fb4" }
+winit = "0.30"
+cpal = "=0.18.2"
+
+[profile.dev]
+debug-assertions = true
+overflow-checks = true
