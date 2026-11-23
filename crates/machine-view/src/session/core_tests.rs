@@ -168,11 +168,7 @@ echo-input
         echoed(&messages),
         [format!(
             "{:?}",
-            InputEvent::Pad {
-                port: PortId(0),
-                control: PadControl::A,
-                pressed: true
-            }
+            InputEvent::pad(PortId(0), PadControl::A, true)
         )],
         "one pad event, no key event"
     );
@@ -265,25 +261,8 @@ fn the_pointer_aims_at_the_whole_picture_with_overscan_hidden_and_shown_and_none
         .unwrap();
     assert_eq!(pixel(&session, 1, 1), OVERSCAN);
 
-    let place = |position| {
-        format!(
-            "{:?}",
-            InputEvent::PointerPosition {
-                port: PortId(2),
-                position
-            }
-        )
-    };
-    let button = |pressed| {
-        format!(
-            "{:?}",
-            InputEvent::PointerButton {
-                port: PortId(2),
-                button: 0,
-                pressed
-            }
-        )
-    };
+    let place = |position| format!("{:?}", InputEvent::pointer_position(PortId(2), position));
+    let button = |pressed| format!("{:?}", InputEvent::pointer_button(PortId(2), 0, pressed));
     let centre = |pixel: u32, size: u32| (((2 * pixel + 1) << 16) / (2 * size)) as u16;
     assert_eq!(
         echoed(&messages),
@@ -507,10 +486,29 @@ fn after_a_load_or_a_hard_reset_the_gun_points_where_the_host_pointer_rests() {
     let (x, y) = point_at(&layout, (20, 15));
     let again = format!(
         "{:?}",
-        InputEvent::PointerPosition {
-            port: PortId(2),
-            position: layout.pointer_position(x, y)
-        }
+        InputEvent::pointer_position(PortId(2), layout.pointer_position(x, y))
     );
     assert_eq!(echoed(&messages).last(), Some(&again));
+}
+
+#[test]
+fn a_running_reset_releases_cached_pad_keys_so_a_fresh_press_reaches_the_core() {
+    for kind in [ResetKind::Soft, ResetKind::Hard] {
+        let mut session = session("unemu-test-core 1\nclock 1000000\nframe 1000\npad 0 a,b,start\nresets soft,hard\necho-input\n");
+        session.key_event(KeyCode::KeyX, Pressed);
+        session.advance_fully(ms(1)).unwrap();
+        session.reset(kind, ms(1), &mut io::sink()).unwrap();
+        session.key_event(KeyCode::KeyX, Pressed);
+        let mut diagnostics = Vec::new();
+        session
+            .advance_fully_with_warnings(ms(2), &mut diagnostics)
+            .unwrap();
+        assert_eq!(
+            echoed(&diagnostics),
+            [format!(
+                "{:?}",
+                InputEvent::pad(PortId(0), PadControl::A, true)
+            )]
+        );
+    }
 }

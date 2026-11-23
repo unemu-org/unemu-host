@@ -65,12 +65,7 @@ pub fn layout(
     {
         return None;
     }
-    let whole = FrameArea {
-        x: 0,
-        y: 0,
-        width,
-        height,
-    };
+    let whole = FrameArea::new(0, 0, width, height);
     // The field is public, so a visible part outside the picture is taken
     // as no statement at all.
     let visible = picture.visible;

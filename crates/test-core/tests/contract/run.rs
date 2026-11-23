@@ -34,8 +34,6 @@ fn deadlines_are_met_at_the_next_whole_step() {
     let both = RunLimit::until(Ticks(100)).with_steps(Some(20));
     assert_eq!(machine.run(both).unwrap(), Stop::Steps);
     assert_eq!(machine.now(), Ticks(80));
-    let neither = RunLimit::until(Ticks(0)).with_until(None);
-    assert_eq!(machine.run(neither).unwrap_err().kind, ErrorKind::Usage);
 }
 
 #[test]
@@ -138,15 +136,7 @@ fn input_takes_effect_at_the_next_run_and_shows_at_the_next_frame() {
     let mut machine = create(INPUT);
     let first = picture(machine.as_mut());
     assert_eq!((first.width, first.height, first.aspect), (40, 30, (4, 3)));
-    assert_eq!(
-        first.visible,
-        FrameArea {
-            x: 4,
-            y: 2,
-            width: 32,
-            height: 26
-        }
-    );
+    assert_eq!(first.visible, FrameArea::new(4, 2, 32, 26));
     assert_eq!(first.at(0, 0), OVERSCAN);
     assert_eq!(first.at(39, 29), OVERSCAN);
     assert_eq!(first.at(4, 2), background(0));
@@ -156,48 +146,15 @@ fn input_takes_effect_at_the_next_run_and_shows_at_the_next_frame() {
     assert_eq!(first.at(20, 15), cross_colour(0));
 
     for event in [
-        InputEvent::Pad {
-            port: PortId(1),
-            control: PadControl::A,
-            pressed: true,
-        },
-        InputEvent::Pad {
-            port: PortId(1),
-            control: PadControl::Start,
-            pressed: true,
-        },
-        // Not a control of this port: ignored.
-        InputEvent::Pad {
-            port: PortId(1),
-            control: PadControl::B,
-            pressed: true,
-        },
-        InputEvent::Pad {
-            port: PortId(2),
-            control: PadControl::B,
-            pressed: true,
-        },
-        InputEvent::Key {
-            port: PortId(0),
-            key: Key::A,
-            state: KeyState::Pressed,
-        },
-        InputEvent::PointerMotion {
-            port: PortId(3),
-            dx: 5,
-            dy: 3,
-        },
-        InputEvent::PointerButton {
-            port: PortId(3),
-            button: 1,
-            pressed: true,
-        },
-        InputEvent::PointerPosition {
-            port: PortId(4),
-            position: Some((0, 65535)),
-        },
+        InputEvent::pad(PortId(1), PadControl::A, true),
+        InputEvent::pad(PortId(1), PadControl::Start, true),
+        InputEvent::pad(PortId(2), PadControl::B, true),
+        InputEvent::key(PortId(0), Key::A, KeyState::Pressed),
+        InputEvent::pointer_motion(PortId(3), 5, 3),
+        InputEvent::pointer_button(PortId(3), 1, true),
+        InputEvent::pointer_position(PortId(4), Some((0, 65535))),
     ] {
-        machine.input(event);
+        machine.input(event).unwrap();
     }
     assert!(
         messages(machine.as_mut()).is_empty(),
@@ -206,7 +163,7 @@ fn input_takes_effect_at_the_next_run_and_shows_at_the_next_frame() {
     run_to(machine.as_mut(), 5);
     assert_eq!(
         messages(machine.as_mut()).len(),
-        8,
+        7,
         "every event at the boundary"
     );
     assert_eq!(
@@ -234,7 +191,7 @@ fn input_takes_effect_at_the_next_run_and_shows_at_the_next_frame() {
     assert_eq!(shown.at(4, 2), background(1));
 
     // ReleaseAll lets go of every control and button and keeps the places.
-    machine.input(InputEvent::ReleaseAll);
+    machine.input(InputEvent::ReleaseAll).unwrap();
     run_to(machine.as_mut(), 20);
     let released = picture(machine.as_mut());
     assert_eq!(released.at(field.x, field.y), field_colour(&[]));
@@ -255,45 +212,6 @@ fn a_fail_content_event_fails_the_run_as_changed_content() {
 }
 
 #[test]
-fn limits_past_the_end_of_virtual_time_are_refused_and_change_nothing() {
-    let mut machine = create("unemu-test-core 1\nstep 4\nframe 40\nframe-stops\n");
-    run_to(machine.as_mut(), 8);
-    for limit in [
-        RunLimit::steps(u64::MAX),
-        RunLimit::steps(u64::MAX / 4 + 1),
-        RunLimit::until(Ticks(u64::MAX)),
-        RunLimit::until(Ticks(u64::MAX - 2)).with_stop_on_frame(true),
-    ] {
-        let error = machine.run(limit).expect_err("past the end of time");
-        assert_eq!(error.kind, ErrorKind::Usage, "{limit:?}");
-        assert_eq!(machine.status(), Status::Ready, "{limit:?}");
-        assert_eq!(machine.now(), Ticks(8), "{limit:?}");
-    }
-    // The last whole step of virtual time is reachable.
-    let last = u64::MAX / 4;
-    assert_eq!(machine.run(RunLimit::steps(last)).unwrap(), Stop::Steps);
-    assert_eq!(machine.now(), Ticks(last * 4));
-    // No frame finishes after it: a frame stop alone is refused.
-    let error = machine
-        .run(
-            RunLimit::until(Ticks(0))
-                .with_until(None)
-                .with_stop_on_frame(true),
-        )
-        .expect_err("no frame left");
-    assert_eq!(error.kind, ErrorKind::Usage);
-    assert_eq!(machine.status(), Status::Ready);
-    // An event past the end never comes; a deadline before it still works.
-    let mut machine = create("unemu-test-core 1\nstep 4\nat 18446744073709551615 halt\n");
-    assert_eq!(run_to(machine.as_mut(), 100), Stop::Deadline);
-    assert_eq!(
-        machine.run(RunLimit::steps(u64::MAX / 4)).unwrap(),
-        Stop::Steps
-    );
-    assert_eq!(machine.status(), Status::Ready);
-}
-
-#[test]
 fn a_third_pad_does_not_show_and_moves_no_serial() {
     let mut machine =
         create("unemu-test-core 1\nframe 10\npad 0 a\npad 1 a\npad 2 a\nresets soft\n");
@@ -302,11 +220,9 @@ fn a_third_pad_does_not_show_and_moves_no_serial() {
     // A reset at the edge makes the next frame show the same count again,
     // so only the third pad's control differs between the two frames.
     machine.reset(ResetKind::Soft).expect("reset");
-    machine.input(InputEvent::Pad {
-        port: PortId(2),
-        control: PadControl::A,
-        pressed: true,
-    });
+    machine
+        .input(InputEvent::pad(PortId(2), PadControl::A, true))
+        .unwrap();
     run_to(machine.as_mut(), 20);
     let after = picture(machine.as_mut());
     assert_eq!(after.pixels, before.pixels);

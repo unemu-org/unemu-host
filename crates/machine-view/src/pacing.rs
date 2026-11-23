@@ -480,13 +480,7 @@ mod tests {
     #[test]
     fn clock_domain_wall_conversion_saturates_without_wrapping() {
         let result = std::panic::catch_unwind(|| {
-            super::virtual_ticks(
-                Duration::MAX,
-                Rate {
-                    numerator: u64::MAX,
-                    denominator: 1,
-                },
-            )
+            super::virtual_ticks(Duration::MAX, Rate::new(u64::MAX, 1))
         });
         assert_eq!(result.ok(), Some(u128::MAX));
         assert_eq!(virtual_ticks(Duration::from_secs(11)), 13_125_000);

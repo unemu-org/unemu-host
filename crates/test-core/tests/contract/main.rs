@@ -4,6 +4,7 @@
 
 mod honest;
 mod identify;
+mod migration;
 mod records;
 mod replay;
 mod run;

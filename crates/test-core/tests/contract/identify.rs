@@ -206,7 +206,7 @@ fn a_bad_script_is_refused_with_its_line() {
             ))
             .err()
             .expect("create refuses a bad script");
-        assert_eq!(refused.kind, ErrorKind::Content, "{script:?}");
+        assert_eq!(refused.kind, ErrorKind::Unsupported, "{script:?}");
         assert_eq!(refused.message, error.message);
     }
 }
@@ -310,7 +310,7 @@ fn create_takes_the_script_from_its_source_by_digest_and_refuses_options() {
         )
         .err()
         .expect("no options");
-    assert_eq!(refused.kind, ErrorKind::Config);
+    assert_eq!(refused.kind, ErrorKind::Usage);
 }
 
 #[test]
@@ -330,4 +330,56 @@ fn the_example_of_the_crate_documentation_is_a_working_script() {
     crate::support::run_to(machine.as_mut(), ten_seconds + 1);
     let notes = crate::support::messages(machine.as_mut());
     assert_eq!(notes[0].text, "ten seconds in");
+}
+
+#[test]
+fn identify_rejects_a_receipt_size_mismatch_before_inspecting_bytes() {
+    for bytes in [b"foreign".as_slice(), b"unemu-test-core 1\n".as_slice()] {
+        let content = MemoryContent::new(bytes.to_vec());
+        let error = CORE
+            .identify(&OfferedContent::new(
+                "script.utc",
+                [0; 32],
+                bytes.len() as u64 + 1,
+                &content,
+            ))
+            .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Content);
+    }
+}
+
+#[test]
+fn a_refused_core_chosen_content_read_is_storage_rather_than_caller_usage() {
+    use unemu_core_api::{Content, ContentSource, Error};
+    struct Refusing;
+    impl ContentSource for Refusing {
+        fn open(&self, _: &[u8; 32], _: u64) -> Result<Content, Error> {
+            let reader = MemoryContent::new(b"unemu-test-core 1\n".to_vec());
+            reader.fail_next(Error::new(ErrorKind::Usage, "read refused"));
+            Ok(Content::Reader(Box::new(reader)))
+        }
+    }
+    let script = "unemu-test-core 1\n";
+    let content = MemoryContent::new(script.as_bytes().to_vec());
+    content.fail_next(Error::new(ErrorKind::Usage, "read refused"));
+    let error = CORE
+        .identify(&OfferedContent::new(
+            "script.utc",
+            digest_of(script),
+            script.len() as u64,
+            &content,
+        ))
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Storage);
+    let identified = identify(script).unwrap().unwrap();
+    let error = CORE
+        .create(&CreateRequest::new(
+            identified.platform,
+            identified.config.as_document(),
+            &Refusing,
+            Rc::new(MemoryStorage::new()),
+        ))
+        .err()
+        .unwrap();
+    assert_eq!(error.kind, ErrorKind::Storage);
 }

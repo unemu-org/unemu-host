@@ -21,15 +21,15 @@ at 5000 halt
 #[test]
 fn a_state_saved_changed_and_loaded_gives_the_saved_counters_and_picture() {
     let mut machine = create(SCRIPT);
-    machine.input(InputEvent::Pad {
-        port: PortId(0),
-        control: PadControl::A,
-        pressed: true,
-    });
-    machine.input(InputEvent::PointerPosition {
-        port: PortId(1),
-        position: Some((32768, 32768)),
-    });
+    machine
+        .input(InputEvent::pad(PortId(0), PadControl::A, true))
+        .unwrap();
+    machine
+        .input(InputEvent::pointer_position(
+            PortId(1),
+            Some((32768, 32768)),
+        ))
+        .unwrap();
     run_to(machine.as_mut(), 1_250);
     let saved_picture = picture(machine.as_mut());
     assert_eq!(saved_picture.at(0, 0), background(12));
@@ -43,15 +43,12 @@ fn a_state_saved_changed_and_loaded_gives_the_saved_counters_and_picture() {
     machine.save_state(&mut state).expect("save");
 
     // Change everything the counters hold.
-    machine.input(InputEvent::Pad {
-        port: PortId(0),
-        control: PadControl::B,
-        pressed: true,
-    });
-    machine.input(InputEvent::PointerPosition {
-        port: PortId(1),
-        position: None,
-    });
+    machine
+        .input(InputEvent::pad(PortId(0), PadControl::B, true))
+        .unwrap();
+    machine
+        .input(InputEvent::pointer_position(PortId(1), None))
+        .unwrap();
     run_to(machine.as_mut(), 3_000);
     machine.reset(ResetKind::Hard).expect("a start");
     assert_eq!(run_to(machine.as_mut(), 6_000), Stop::Halted);

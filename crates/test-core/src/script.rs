@@ -150,7 +150,7 @@ struct Line<'a> {
 impl<'a> Line<'a> {
     fn fail(&self, message: impl std::fmt::Display) -> Error {
         Error::new(
-            ErrorKind::Content,
+            ErrorKind::Unsupported,
             format!("script line {}: {message}", self.number),
         )
     }
@@ -324,12 +324,12 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Script, Error> {
                 once(&line, &mut aspect, (width, height), keyword)?;
             }
             "visible" => {
-                let area = FrameArea {
-                    x: line.int("the column")?,
-                    y: line.int("the row")?,
-                    width: line.int("the width")?,
-                    height: line.int("the height")?,
-                };
+                let area = FrameArea::new(
+                    line.int("the column")?,
+                    line.int("the row")?,
+                    line.int("the width")?,
+                    line.int("the height")?,
+                );
                 line.end()?;
                 if area.width == 0 || area.height == 0 {
                     return Err(line.fail("the visible part is not empty"));
@@ -543,12 +543,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Script, Error> {
     }
 
     let (width, height) = picture.unwrap_or((64, 48));
-    let whole = FrameArea {
-        x: 0,
-        y: 0,
-        width,
-        height,
-    };
+    let whole = FrameArea::new(0, 0, width, height);
     let visible = match visible {
         Some((area, number)) => {
             if !area.is_within(width, height) {

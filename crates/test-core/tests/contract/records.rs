@@ -159,33 +159,29 @@ fn kept(machine: &mut dyn unemu_core_api::Machine, record: &str) -> Result<usize
             [3; 32],
             8,
             "utc",
-            WriteTarget::Kept { record },
+            WriteTarget::kept(record),
         ),
     )
 }
 
 #[test]
-fn a_kept_record_that_cannot_be_opened_fails_the_next_run() {
+fn a_kept_record_open_error_is_immediate_and_preserves_the_insertion() {
     let storage = MemoryStorage::new();
     let mut machine = create_on(SLOT, &storage).expect("create");
-    let index = kept(machine.as_mut(), "kept-a").expect("a kept medium");
+    let index = kept(machine.as_mut(), "kept-a").unwrap();
     storage.fail_next(
         "kept-a",
         Operation::Open,
         Error::new(ErrorKind::Storage, "cannot open"),
     );
-    machine
-        .change_medium(SlotId(0), MediaAction::Insert(index))
-        .expect("queued");
-    assert!(
-        !storage.is_open("kept-a"),
-        "opened at the boundary, not before"
-    );
     let error = machine
-        .run(RunLimit::until(Ticks(10)))
-        .expect_err("the record could not be opened");
+        .change_medium(SlotId(0), MediaAction::Insert(index))
+        .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Storage);
-    assert_eq!(machine.status(), Status::Failed);
+    assert_eq!(machine.status(), Status::Ready);
+    assert_eq!(machine.slot_states()[0].inserted, None);
+    assert!(!storage.is_open("kept-a"));
+    assert_eq!(run_to(machine.as_mut(), 10), unemu_core_api::Stop::Deadline);
 }
 
 #[test]

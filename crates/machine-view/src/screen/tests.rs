@@ -18,12 +18,7 @@ fn picture(width: u32, height: u32, aspect: (u32, u32), visible: FrameArea) -> P
 }
 
 fn area(x: u32, y: u32, width: u32, height: u32) -> FrameArea {
-    FrameArea {
-        x,
-        y,
-        width,
-        height,
-    }
+    FrameArea::new(x, y, width, height)
 }
 
 fn panel(x: f32, y: f32, width: f32, height: f32) -> Rect {

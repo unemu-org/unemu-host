@@ -41,12 +41,12 @@ pub const fn field_area(visible: FrameArea) -> FrameArea {
     } else {
         visible.height / 2
     };
-    FrameArea {
-        x: visible.x + visible.width / 4,
-        y: visible.y + visible.height / 4,
+    FrameArea::new(
+        visible.x + visible.width / 4,
+        visible.y + visible.height / 4,
         width,
         height,
-    }
+    )
 }
 
 /// The bit of a control within one player's twelve bits: the order of

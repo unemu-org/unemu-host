@@ -23,6 +23,7 @@ use winit::{
 /// further events.
 pub struct PointerCapture {
     port: Option<PortId>,
+    button_count: u8,
     captured: bool,
     focused: bool,
     inside: bool,
@@ -36,10 +37,11 @@ pub struct PointerCapture {
 }
 
 impl PointerCapture {
-    /// Capture only for a machine with a relative pointer on `port`.
-    pub fn new(port: Option<PortId>) -> Self {
+    /// Capture only for a relative pointer advertising `buttons` on `port`.
+    pub fn new(port: Option<(PortId, u8)>) -> Self {
         Self {
-            port,
+            port: port.map(|(id, _)| id),
+            button_count: port.map_or(0, |(_, buttons)| buttons),
             captured: false,
             focused: true,
             inside: false,
@@ -93,6 +95,9 @@ impl PointerCapture {
             MouseButton::Middle => (2, 4),
             _ => return false,
         };
+        if number >= self.button_count {
+            return false;
+        }
         let pressed = state == ElementState::Pressed;
         let buttons = if pressed {
             self.buttons | bit
@@ -101,11 +106,8 @@ impl PointerCapture {
         };
         if buttons != self.buttons {
             self.buttons = buttons;
-            self.events.push(InputEvent::PointerButton {
-                port,
-                button: number,
-                pressed,
-            });
+            self.events
+                .push(InputEvent::pointer_button(port, number, pressed));
         }
         false
     }
@@ -188,11 +190,8 @@ impl PointerCapture {
         };
         for (number, bit) in [(0, 1), (1, 2), (2, 4)] {
             if self.buttons & bit != 0 {
-                self.events.push(InputEvent::PointerButton {
-                    port,
-                    button: number,
-                    pressed: false,
-                });
+                self.events
+                    .push(InputEvent::pointer_button(port, number, false));
             }
         }
         self.buttons = 0;
@@ -220,7 +219,7 @@ impl PointerCapture {
         if dx == 0 && dy == 0 {
             return;
         }
-        self.events.push(InputEvent::PointerMotion { port, dx, dy });
+        self.events.push(InputEvent::pointer_motion(port, dx, dy));
     }
 }
 
@@ -280,7 +279,7 @@ impl Aiming {
         }
         self.sent = Some(position);
         self.events
-            .push(InputEvent::PointerPosition { port, position });
+            .push(InputEvent::pointer_position(port, position));
     }
 
     /// A host button the view meant for the machine.
@@ -303,11 +302,8 @@ impl Aiming {
             return;
         }
         self.held ^= bit;
-        self.events.push(InputEvent::PointerButton {
-            port,
-            button: number,
-            pressed,
-        });
+        self.events
+            .push(InputEvent::pointer_button(port, number, pressed));
     }
 
     /// The window lost focus and the machine was told to release
@@ -325,7 +321,7 @@ impl Aiming {
         self.held = 0;
         if let (Some(port), Some(position)) = (self.port, self.sent) {
             self.events
-                .push(InputEvent::PointerPosition { port, position });
+                .push(InputEvent::pointer_position(port, position));
         }
     }
 

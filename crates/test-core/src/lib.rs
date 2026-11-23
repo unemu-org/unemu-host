@@ -72,34 +72,37 @@
 //!
 //! - **Time.** A run jumps from boundary to boundary in whole steps.
 //!   `steps()` is `now() / step`. A deadline is met at the first boundary at
-//!   or after it. At one boundary the events come first, in script order,
-//!   then a frame stop, then the deadline, then the step budget. `halt`
+//!   or after it. Simultaneous stops prefer execution errors, power-off,
+//!   halt, requested frame, deadline, then the absolute step budget. `halt`
 //!   leaves the machine [`Status::Halted`](unemu_core_api::Status), `power-off`
 //!   [`Status::Off`](unemu_core_api::Status), `fail` fails the run with
 //!   [`ErrorKind::Guest`] and `fail-content` with [`ErrorKind::Content`],
 //!   each leaving the machine failed; `guest-reset` is a soft reset done
-//!   inside the run and reported as a note. A deadline or a step budget past
-//!   the end of virtual time is refused with [`ErrorKind::Usage`] and the
-//!   machine stays as it was.
-//! - **Input** queued by `input` takes effect at the start of the next run.
+//!   inside the run and reported as a note. Unbounded runs are allowed;
+//!   exhausting virtual counters fails with [`ErrorKind::Guest`].
+//! - **Input** accepted by `input` takes effect at the next Ready run, even
+//!   at an already reached limit. Invalid ports or controls, and input while
+//!   Off, Failed or Finished, return [`ErrorKind::Usage`] without queuing.
 //! - **The picture** is drawn when a frame finishes, so it is always a
 //!   finished one: see [`picture`].
 //! - **The sound** is a square wave whose frame `i` is the sound at
 //!   `i × clock / rate` ticks: see [`sound`]. Sound is on from creation.
 //! - **Resets.** Soft and hard restart the frame count; with `battery`, hard
-//!   also counts a start. Held controls stay held.
+//!   also counts a start. Both clear queued input and held controls, keeping
+//!   pointer positions.
 //! - **Battery memory** counts the machine's starts: its creation and every
 //!   hard reset. It is written with `replace` and `commit` at `finish`, and
 //!   at the end of a run once it changed and ten virtual seconds passed
 //!   since the last write.
 //! - **A saved state** is the counters: the time, the last start, the
 //!   starts, the events done, the status, what the last frame shows and what
-//!   is held. It loads only into a machine with an equal
+//!   is held, including queued input. It loads only into a machine with an equal
 //!   [`Machine::state_identity`],
-//!   which names this release and the script's digest.
+//!   which covers this release, the script digest, media catalogue and
+//!   inserted media identities and external record generations.
 //! - **Media** are catalogue entries only. A medium added with
 //!   [`WriteTarget::Kept`](unemu_core_api::WriteTarget) has its record opened
-//!   when it is inserted, at the next run, and made durable at `finish`.
+//!   immediately when it is inserted, and made durable at `finish`.
 //!
 //! # The config
 //!
@@ -151,12 +154,13 @@ static PLATFORMS: [PlatformDescription; 1] = [PlatformDescription::new(PLATFORM,
             .with_resets(&RESETS)
             .with_saved_state(true)
             .with_media_changes(true)
+            .with_media_additions(true)
             .with_frame_stops(true),
     )
     .with_content(&KINDS)];
 
 static DESCRIPTION: CoreDescription = CoreDescription::new(
-    ContractVersion::new(0, 3),
+    ContractVersion::new(0, 4),
     CORE_ID,
     "unemu test core",
     env!("CARGO_PKG_VERSION"),
@@ -177,8 +181,19 @@ fn read_script(reader: &dyn ContentReader) -> Result<Vec<u8>, Error> {
         ));
     }
     let mut bytes = vec![0; size as usize];
-    reader.read_at(0, &mut bytes)?;
+    reader
+        .read_at(0, &mut bytes)
+        .map_err(content_read_failure)?;
     Ok(bytes)
+}
+
+// The core chooses the read range; a refused read is not caller misuse.
+fn content_read_failure(error: Error) -> Error {
+    if error.kind == ErrorKind::Usage {
+        Error::new(ErrorKind::Storage, error.message)
+    } else {
+        error
+    }
 }
 
 fn check_platform(platform: &str) -> Result<(), Error> {
@@ -202,7 +217,7 @@ impl Core for TestCore {
         let wanted = config::read(request.config)?;
         if let Some((key, _)) = request.options.first() {
             return Err(Error::new(
-                ErrorKind::Config,
+                ErrorKind::Usage,
                 format!("the test core takes no option {key}"),
             ));
         }
@@ -233,8 +248,17 @@ impl Core for TestCore {
     /// `None` for bytes whose first line is not `unemu-test-core 1`.
     fn identify(&self, content: &OfferedContent<'_>) -> Result<Option<Identified>, Error> {
         let size = content.bytes.size();
+        if size != content.size {
+            return Err(Error::new(
+                ErrorKind::Content,
+                "offered content size does not match its receipt",
+            ));
+        }
         let mut head = vec![0; size.min(script::HEADER.len() as u64 + 2) as usize];
-        content.bytes.read_at(0, &mut head)?;
+        content
+            .bytes
+            .read_at(0, &mut head)
+            .map_err(content_read_failure)?;
         if !script::has_header(&head) {
             return Ok(None);
         }

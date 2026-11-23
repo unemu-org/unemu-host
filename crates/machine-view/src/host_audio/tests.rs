@@ -727,6 +727,8 @@ fn whole_odd_rates_and_the_bounds_reach_the_device_with_the_tone_kept() {
 
 #[test]
 fn the_window_plays_exactly_the_rates_the_contract_allows() {
+    let mut invalid = Rate::new(48_000, 1);
+    invalid.denominator = 0;
     for (rate, played) in [
         (Rate::new(8_000, 1), true),
         (Rate::new(7_999, 1), false),
@@ -735,13 +737,7 @@ fn the_window_plays_exactly_the_rates_the_contract_allows() {
         (Rate::new(984_375, 22), true),
         (Rate::new(15_999, 2), false),
         (Rate::new(384_000, 2), true),
-        (
-            Rate {
-                numerator: 48_000,
-                denominator: 0,
-            },
-            false,
-        ),
+        (invalid, false),
         (Rate::new(0, 1), false),
         (Rate::new(u64::MAX, u64::MAX - 1), false),
     ] {

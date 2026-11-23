@@ -51,6 +51,7 @@ fn session(script: &str) -> Session {
         record: None,
     };
     let mut state = Vec::new();
+    let mut saved_medium = None;
     let record = |machine: &mut dyn Machine, stop: Stop, out: &mut Session| {
         out.stops.push((stop, machine.now(), machine.steps()));
         out.pictures.push(picture(machine));
@@ -58,20 +59,24 @@ fn session(script: &str) -> Session {
         out.messages.extend(messages(machine));
     };
     for round in 0..40u64 {
-        machine.input(InputEvent::Pad {
-            port: PortId(0),
-            control: if round % 3 == 0 {
-                PadControl::A
-            } else {
-                PadControl::Start
-            },
-            pressed: round % 2 == 0,
-        });
-        machine.input(InputEvent::PointerMotion {
-            port: PortId(1),
-            dx: (round % 5) as i32 - 2,
-            dy: (round % 7) as i32 - 3,
-        });
+        machine
+            .input(InputEvent::pad(
+                PortId(0),
+                if round % 3 == 0 {
+                    PadControl::A
+                } else {
+                    PadControl::Start
+                },
+                round % 2 == 0,
+            ))
+            .unwrap();
+        machine
+            .input(InputEvent::pointer_motion(
+                PortId(1),
+                (round % 5) as i32 - 2,
+                (round % 7) as i32 - 3,
+            ))
+            .unwrap();
         if round % 9 == 4 {
             machine
                 .change_medium(SlotId(0), MediaAction::Next)
@@ -87,9 +92,20 @@ fn session(script: &str) -> Session {
         match round {
             10 => machine.set_outputs(Outputs::NONE),
             14 => machine.set_outputs(Outputs::NONE.with_audio(true)),
-            20 => machine.save_state(&mut state).expect("save"),
+            20 => {
+                machine.save_state(&mut state).expect("save");
+                saved_medium = machine.slot_states()[0].inserted;
+            }
             25 => machine.reset(ResetKind::Hard).expect("reset"),
-            30 => machine.load_state(&mut state.as_slice()).expect("load"),
+            30 => {
+                machine
+                    .change_medium(
+                        SlotId(0),
+                        saved_medium.map_or(MediaAction::Eject, MediaAction::Insert),
+                    )
+                    .unwrap();
+                machine.load_state(&mut state.as_slice()).expect("load");
+            }
             _ => {}
         }
     }

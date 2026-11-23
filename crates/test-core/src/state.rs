@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The counters a saved state holds, and their bytes.
 //!
-//! A state is the line `unemu-test-core state 1`, the machine's state
+//! A state is the line `unemu-test-core state 2`, the machine's state
 //! identity on the next line, then the counters in little-endian order:
 //! the time, the time of the last start, the starts, the events done, the
 //! status, then what the last finished frame shows and what the machine
-//! holds now.
+//! holds now, followed by queued input events.
 
 use crate::picture::Shown;
-use unemu_core_api::{Error, ErrorKind, Status};
+use unemu_core_api::{Error, ErrorKind, InputEvent, Key, KeyState, PadControl, PortId, Status};
 
-const FIRST_LINE: &[u8] = b"unemu-test-core state 1\n";
+const FIRST_LINE: &[u8] = b"unemu-test-core state 2\n";
 
 /// A pointer's pixel, if it points at the picture, and its held buttons.
 pub(crate) type Pointer = (Option<(u32, u32)>, u8);
@@ -66,7 +66,7 @@ fn put_masks(out: &mut Vec<u8>, masks: &[u16]) {
 }
 
 /// The bytes of a state.
-pub(crate) fn encode(identity: &str, counters: &Counters) -> Vec<u8> {
+pub(crate) fn encode(identity: &str, counters: &Counters, pending: &[InputEvent]) -> Vec<u8> {
     let mut out = FIRST_LINE.to_vec();
     out.extend_from_slice(identity.as_bytes());
     out.push(b'\n');
@@ -88,6 +88,7 @@ pub(crate) fn encode(identity: &str, counters: &Counters) -> Vec<u8> {
         put_masks(&mut out, keys);
     }
     put_pointers(&mut out, &counters.held.pointers);
+    put_events(&mut out, pending);
     out
 }
 
@@ -190,7 +191,11 @@ pub(crate) struct Shape {
 }
 
 /// Read a state saved by a machine with the same identity and shape.
-pub(crate) fn decode(identity: &str, shape: &Shape, bytes: &[u8]) -> Result<Counters, Error> {
+pub(crate) fn decode(
+    identity: &str,
+    shape: &Shape,
+    bytes: &[u8],
+) -> Result<(Counters, Vec<InputEvent>), Error> {
     let rest = bytes
         .strip_prefix(FIRST_LINE)
         .ok_or_else(|| refused("is not one the test core wrote"))?;
@@ -223,20 +228,129 @@ pub(crate) fn decode(identity: &str, shape: &Shape, bytes: &[u8]) -> Result<Coun
         .map(|_| reader.keys())
         .collect::<Result<_, _>>()?;
     let pointers = reader.pointers(shape.pointers, shape.width, shape.height)?;
+    let pending = read_events(&mut reader)?;
     if !reader.bytes.is_empty() {
         return Err(refused("has bytes after its counters"));
     }
-    Ok(Counters {
-        now,
-        started_at,
-        starts,
-        events_done: events_done as usize,
-        status,
-        shown,
-        held: Held {
-            pads,
-            keys,
-            pointers,
+    Ok((
+        Counters {
+            now,
+            started_at,
+            starts,
+            events_done: events_done as usize,
+            status,
+            shown,
+            held: Held {
+                pads,
+                keys,
+                pointers,
+            },
         },
-    })
+        pending,
+    ))
+}
+
+fn put_events(out: &mut Vec<u8>, events: &[InputEvent]) {
+    put_u64(out, events.len() as u64);
+    for event in events {
+        let fields = match *event {
+            InputEvent::ReleaseAll => [0, 0, 0, 0],
+            InputEvent::Key {
+                port, key, state, ..
+            } => [1, port.0 as u64, key.0 as u64, state as u64],
+            InputEvent::PointerMotion { port, dx, dy, .. } => {
+                [2, port.0 as u64, dx as u32 as u64, dy as u32 as u64]
+            }
+            InputEvent::PointerButton {
+                port,
+                button,
+                pressed,
+                ..
+            } => [3, port.0 as u64, button as u64, pressed as u64],
+            InputEvent::Pad {
+                port,
+                control,
+                pressed,
+                ..
+            } => [4, port.0 as u64, control as u64, pressed as u64],
+            InputEvent::PointerPosition { port, position, .. } => [
+                5,
+                port.0 as u64,
+                position.map_or(u64::MAX, |(x, y)| (x as u64) << 16 | y as u64),
+                0,
+            ],
+            _ => unreachable!("only validated input is queued"),
+        };
+        for n in fields {
+            put_u64(out, n);
+        }
+    }
+}
+fn read_events(reader: &mut Reader<'_>) -> Result<Vec<InputEvent>, Error> {
+    let invalid = || refused("holds invalid queued input");
+    let count = reader.u64()?;
+    if count > (reader.bytes.len() / 32) as u64 {
+        return Err(invalid());
+    }
+    let mut result = Vec::new();
+    for _ in 0..count {
+        let tag = reader.u64()?;
+        let port = PortId(u8::try_from(reader.u64()?).map_err(|_| invalid())?);
+        let a = reader.u64()?;
+        let b = reader.u64()?;
+        let event = match tag {
+            0 if a == 0 && b == 0 => InputEvent::ReleaseAll,
+            1 => InputEvent::key(
+                port,
+                Key(u16::try_from(a).map_err(|_| invalid())?),
+                match b {
+                    0 => KeyState::Pressed,
+                    1 => KeyState::Repeated,
+                    2 => KeyState::Released,
+                    _ => return Err(invalid()),
+                },
+            ),
+            2 => InputEvent::pointer_motion(
+                port,
+                u32::try_from(a).map_err(|_| invalid())? as i32,
+                u32::try_from(b).map_err(|_| invalid())? as i32,
+            ),
+            3 if b <= 1 => {
+                InputEvent::pointer_button(port, u8::try_from(a).map_err(|_| invalid())?, b == 1)
+            }
+            4 if b <= 1 => InputEvent::pad(
+                port,
+                *[
+                    PadControl::Up,
+                    PadControl::Down,
+                    PadControl::Left,
+                    PadControl::Right,
+                    PadControl::A,
+                    PadControl::B,
+                    PadControl::X,
+                    PadControl::Y,
+                    PadControl::L,
+                    PadControl::R,
+                    PadControl::Start,
+                    PadControl::Select,
+                ]
+                .get(usize::try_from(a).map_err(|_| invalid())?)
+                .ok_or_else(invalid)?,
+                b == 1,
+            ),
+            5 if b == 0 => InputEvent::pointer_position(
+                port,
+                if a == u64::MAX {
+                    None
+                } else if a <= u32::MAX as u64 {
+                    Some(((a >> 16) as u16, a as u16))
+                } else {
+                    return Err(invalid());
+                },
+            ),
+            _ => return Err(invalid()),
+        };
+        result.push(event);
+    }
+    Ok(result)
 }

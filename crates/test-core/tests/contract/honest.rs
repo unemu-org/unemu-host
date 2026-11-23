@@ -34,9 +34,9 @@ battery
 ";
 
 #[test]
-fn the_core_states_contract_0_3_and_one_platform_that_opens_scripts() {
+fn the_core_states_contract_0_4_and_one_platform_that_opens_scripts() {
     let description = CORE.description();
-    assert_eq!(description.implements, ContractVersion::new(0, 3));
+    assert_eq!(description.implements, ContractVersion::new(0, 4));
     assert!(CONTRACT.drives(description.implements));
     assert_eq!(description.platforms.len(), 1);
     let platform = &description.platforms[0];
@@ -65,6 +65,7 @@ fn no_promised_call_answers_unsupported() {
         .all(|kind| platform.features.resets.contains(kind)));
     assert!(!features.saved_state || platform.features.saved_state);
     assert!(!features.media_changes || platform.features.media_changes);
+    assert!(!features.media_additions || platform.features.media_additions);
     assert!(!features.frame_stops || platform.features.frame_stops);
     let audio = machine.description().audio.expect("sound");
     assert!(audio.rate_in_bounds());
@@ -82,29 +83,26 @@ fn no_promised_call_answers_unsupported() {
     machine.set_outputs(Outputs::NONE.with_audio(true));
     for port in machine.description().inputs.clone() {
         match port.kind {
-            InputKind::Keyboard => machine.input(InputEvent::Key {
-                port: port.id,
-                key: unemu_core_api::Key::A,
-                state: unemu_core_api::KeyState::Pressed,
-            }),
-            InputKind::Pad { controls } => {
+            InputKind::Keyboard => machine
+                .input(InputEvent::key(
+                    port.id,
+                    unemu_core_api::Key::A,
+                    unemu_core_api::KeyState::Pressed,
+                ))
+                .unwrap(),
+            InputKind::Pad { controls, .. } => {
                 for control in controls {
-                    machine.input(InputEvent::Pad {
-                        port: port.id,
-                        control,
-                        pressed: true,
-                    });
+                    machine
+                        .input(InputEvent::pad(port.id, control, true))
+                        .unwrap();
                 }
             }
-            InputKind::RelativePointer { .. } => machine.input(InputEvent::PointerMotion {
-                port: port.id,
-                dx: 1,
-                dy: 1,
-            }),
-            InputKind::AbsolutePointer { .. } => machine.input(InputEvent::PointerPosition {
-                port: port.id,
-                position: Some((100, 100)),
-            }),
+            InputKind::RelativePointer { .. } => machine
+                .input(InputEvent::pointer_motion(port.id, 1, 1))
+                .unwrap(),
+            InputKind::AbsolutePointer { .. } => machine
+                .input(InputEvent::pointer_position(port.id, Some((100, 100))))
+                .unwrap(),
             _ => {}
         }
     }
@@ -134,9 +132,7 @@ fn no_promised_call_answers_unsupported() {
                         [2; 32],
                         16,
                         &slot.formats[0],
-                        WriteTarget::Kept {
-                            record: "kept-second",
-                        },
+                        WriteTarget::kept("kept-second"),
                     ),
                 )
                 .expect("a removable slot takes a medium");

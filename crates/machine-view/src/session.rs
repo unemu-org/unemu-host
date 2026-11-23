@@ -21,6 +21,8 @@
 //! Confined, hides the cursor and shows the release chord in its status bar.
 //! Failed grabs leave input free; application exit restores the pointer.
 //! Focus loss releases all held keys; stopped-machine input is ignored.
+//! Input refusals stop the session without retrying: Usage in Off/Finished is
+//! a clean stop, and other refusals are reported through [`Session::error`].
 //!
 //! A machine with a keyboard port gets the guest's keys there. A machine
 //! without one but with pad ports gets its pads from the keys bound in
@@ -72,7 +74,8 @@ pub struct Picture {
     pub pixels: Vec<u32>,
     /// The shape of the whole picture on the emulated display.
     pub aspect: (u32, u32),
-    /// Changes whenever the machine's picture changed.
+    /// Tracks pixels only. Texture consumers must also compare width and
+    /// height before deciding to reuse an upload; metadata refreshes separately.
     pub serial: u64,
     /// The part of the picture the emulated display showed for certain, as
     /// the machine states it; the whole picture when it states nothing. The
@@ -158,15 +161,15 @@ impl<M: Machine + ?Sized> Session<M> {
             .iter()
             .find(|port| matches!(port.kind, InputKind::Keyboard))
             .map(|port| port.id);
-        let pointer = description
-            .inputs
-            .iter()
-            .find(|port| matches!(port.kind, InputKind::RelativePointer { .. }))
-            .map(|port| port.id);
+        let pointer = description.inputs.iter().find_map(|port| match port.kind {
+            InputKind::RelativePointer { buttons, .. } => Some((port.id, buttons)),
+            _ => None,
+        });
         let aimed = description.inputs.iter().find_map(|port| match port.kind {
             InputKind::AbsolutePointer {
                 display: aimed,
                 buttons,
+                ..
             } if aimed == display => Some((port.id, buttons)),
             _ => None,
         });
@@ -174,7 +177,7 @@ impl<M: Machine + ?Sized> Session<M> {
             .inputs
             .iter()
             .filter_map(|port| match &port.kind {
-                InputKind::Pad { controls } => Some((port.id, controls.clone())),
+                InputKind::Pad { controls, .. } => Some((port.id, controls.clone())),
                 _ => None,
             })
             .collect();
@@ -190,6 +193,7 @@ impl<M: Machine + ?Sized> Session<M> {
         let audio = description
             .audio
             .map_or_else(HostAudio::new, |sound| HostAudio::for_source(sound.rate));
+        let status = machine.status();
         Ok(Self {
             machine,
             display,
@@ -210,8 +214,8 @@ impl<M: Machine + ?Sized> Session<M> {
             media_slots,
             audio_error_reported: false,
             window: None,
-            running: true,
-            halted: false,
+            running: status == Status::Ready,
+            halted: status == Status::Halted,
             host_failed: false,
             mouse: PointerCapture::new(pointer),
             aim: Aiming::new(aimed),
@@ -295,6 +299,15 @@ impl<M: Machine + ?Sized> Session<M> {
         mut spent: impl FnMut() -> Duration,
     ) -> Result<(), Box<dyn Error>> {
         self.audio.check_failure(warnings);
+        if matches!(
+            self.machine.status(),
+            Status::Failed | Status::Finished | Status::Off
+        ) {
+            self.running = false;
+            self.halted = false;
+            self.release_pointer();
+            self.copy_picture()?;
+        }
         if !self.running || self.occluded_since.is_some() {
             return Ok(());
         }
@@ -354,14 +367,17 @@ impl<M: Machine + ?Sized> Session<M> {
         Ok(())
     }
 
-    /// Copy the machine's picture out when it changed.
+    /// Refresh metadata on every observation; serial identifies pixels only.
     fn copy_picture(&mut self) -> Result<(), unemu_core_api::Error> {
-        let frame = self.machine.frame(self.display)?;
-        if self
-            .picture
-            .as_ref()
-            .is_none_or(|picture| picture.serial != frame.serial)
-        {
+        let frame = match self.machine.frame(self.display) {
+            Err(error) if error.kind == ErrorKind::Usage && self.picture.is_none() => return Ok(()),
+            result => result?,
+        };
+        if self.picture.as_ref().is_none_or(|picture| {
+            picture.serial != frame.serial
+                || picture.width != frame.width
+                || picture.height != frame.height
+        }) {
             self.picture = Some(Picture {
                 width: frame.width,
                 height: frame.height,
@@ -374,6 +390,9 @@ impl<M: Machine + ?Sized> Session<M> {
             {
                 self.picture_copies += 1;
             }
+        } else if let Some(picture) = &mut self.picture {
+            picture.aspect = frame.aspect;
+            picture.visible = frame.visible;
         }
         Ok(())
     }
@@ -431,6 +450,11 @@ impl<M: Machine + ?Sized> Session<M> {
 
     /// End the machine's session cleanly, writing its warnings once.
     pub fn finish(&mut self, warnings: &mut impl io::Write) -> Result<(), Box<dyn Error>> {
+        self.running = false;
+        self.halted = false;
+        if self.machine.status() == Status::Finished {
+            return Ok(());
+        }
         let result = self.machine.finish();
         let mut messages = Vec::new();
         self.machine.drain_messages(&mut messages);
@@ -445,13 +469,19 @@ impl<M: Machine + ?Sized> Session<M> {
     /// Whether the drives take media changes now: while the guest runs, and
     /// while it waits halted for a reset.
     pub fn takes_media(&self) -> bool {
-        (self.running || self.halted) && self.error.is_none() && !self.host_failed
+        (self.running || self.halted)
+            && self.error.is_none()
+            && !self.host_failed
+            && matches!(self.machine.status(), Status::Ready | Status::Halted)
     }
 
     /// Whether Ctrl+Alt+Del restarts the machine rather than reaching the
     /// guest: it halted with interrupts off and no error ended the session.
     pub fn awaits_reset(&self) -> bool {
-        self.halted && self.error.is_none() && !self.host_failed
+        self.halted
+            && self.error.is_none()
+            && !self.host_failed
+            && self.machine.status() == Status::Halted
     }
 
     /// Restart a halted machine with its reset ([`ResetKind::Soft`]). Queued
@@ -483,8 +513,8 @@ impl<M: Machine + ?Sized> Session<M> {
     /// Reset the machine by `kind` at host time `elapsed`, while it runs or
     /// waits halted. Queued media changes go in first, and the machine's
     /// messages go to `diagnostics`. A reset takes no virtual time, so a
-    /// running machine's pacing goes on as it was; held keys and buttons stay
-    /// held, as the machine keeps them, except that a hard reset starts the
+    /// running machine's pacing goes on as it was. The reset releases held
+    /// controls and queued input; a hard reset also starts the
     /// absolute pointer afresh at the host pointer's place. A halted machine
     /// runs again as its status says, paced from `elapsed`, so the time it
     /// waited is not caught up. The machine's refusal (a kind it does not
@@ -503,6 +533,7 @@ impl<M: Machine + ?Sized> Session<M> {
         self.machine.drain_messages(&mut messages);
         let _ = write_messages(&messages, diagnostics);
         reset?;
+        self.pad_keys.clear();
         if kind == ResetKind::Hard {
             self.aim.restate();
             self.forward_pointer();
@@ -560,10 +591,12 @@ impl<M: Machine + ?Sized> Session<M> {
     ) -> Result<(), unemu_core_api::Error> {
         self.check_live()?;
         self.machine.load_state(state)?;
+        // A restored state may precede the first completed picture.
+        self.picture = None;
         self.audio.discard_pending();
         self.pacing.resync(elapsed, self.machine.now().0);
         self.pad_keys.clear();
-        self.machine.input(InputEvent::ReleaseAll);
+        self.deliver_input(InputEvent::ReleaseAll);
         self.mouse.buttons_released();
         // ReleaseAll leaves an absolute pointer where the saved state had it.
         self.aim.restate();
@@ -580,7 +613,11 @@ impl<M: Machine + ?Sized> Session<M> {
     /// `Usage` unless the machine runs or waits halted and nothing ended
     /// its session.
     fn check_live(&self) -> Result<(), unemu_core_api::Error> {
-        if (self.running || self.halted) && self.error.is_none() && !self.host_failed {
+        if (self.running || self.halted)
+            && self.error.is_none()
+            && !self.host_failed
+            && matches!(self.machine.status(), Status::Ready | Status::Halted)
+        {
             Ok(())
         } else {
             Err(unemu_core_api::Error::new(
@@ -610,11 +647,7 @@ impl<M: Machine + ?Sized> Session<M> {
         if self.running && self.error.is_none() {
             for (player, control) in released {
                 if let Some(&(port, _)) = self.pads.get(player) {
-                    self.machine.input(InputEvent::Pad {
-                        port,
-                        control,
-                        pressed: false,
-                    });
+                    self.deliver_input(InputEvent::pad(port, control, false));
                 }
             }
         }
@@ -664,6 +697,33 @@ impl<M: Machine + ?Sized> Session<M> {
         }
     }
 
+    /// Event callbacks cannot return errors. A refusal stops further execution:
+    /// Off/Finished Usage is a clean stop; other refusals are exposed in `error`.
+    /// No rejected event is retried, including pointer releases after shutdown.
+    fn deliver_input(&mut self, event: InputEvent) -> bool {
+        if let Err(error) = self.machine.input(event) {
+            self.running = false;
+            self.halted = false;
+            if !(error.kind == ErrorKind::Usage
+                && matches!(self.machine.status(), Status::Off | Status::Finished))
+                && self.error.is_none()
+            {
+                self.error = Some(error.into());
+            }
+            let was_captured = self.mouse.captured();
+            self.mouse.release();
+            // Input is refused, so discard releases and pending pointer events.
+            let _ = self.mouse.take_events();
+            let _ = self.aim.take_events();
+            self.aim.forget();
+            if was_captured {
+                self.restore_pointer();
+            }
+            return false;
+        }
+        true
+    }
+
     fn send_key(&mut self, key: KeyCode, state: ElementState) {
         let Some(key) = key_usage(key) else {
             return;
@@ -672,15 +732,15 @@ impl<M: Machine + ?Sized> Session<M> {
             self.send_pad(key, state == ElementState::Pressed);
             return;
         };
-        self.machine.input(InputEvent::Key {
+        self.deliver_input(InputEvent::key(
             port,
             key,
-            state: if state == ElementState::Pressed {
+            if state == ElementState::Pressed {
                 KeyState::Pressed
             } else {
                 KeyState::Released
             },
-        });
+        ));
     }
 
     /// Work the pad control `key` is bound to, if its player's port lists
@@ -712,21 +772,21 @@ impl<M: Machine + ?Sized> Session<M> {
             .iter()
             .any(|&other| other != key && bindings.control(other) == Some((player, control)));
         if !still_held {
-            self.machine.input(InputEvent::Pad {
-                port,
-                control,
-                pressed,
-            });
+            self.deliver_input(InputEvent::pad(port, control, pressed));
         }
     }
 
     /// Hand the pointers' queued guest events to the machine.
     fn forward_pointer(&mut self) {
         for event in self.mouse.take_events() {
-            self.machine.input(event);
+            if !self.deliver_input(event) {
+                return;
+            }
         }
         for event in self.aim.take_events() {
-            self.machine.input(event);
+            if !self.deliver_input(event) {
+                return;
+            }
         }
     }
 
@@ -845,7 +905,7 @@ impl<M: Machine + ?Sized> Session<M> {
             self.restore_pointer();
         }
         if release_all {
-            self.machine.input(InputEvent::ReleaseAll);
+            self.deliver_input(InputEvent::ReleaseAll);
             // ReleaseAll leaves an absolute pointer's place.
             self.aim.focus_lost();
             self.forward_pointer();

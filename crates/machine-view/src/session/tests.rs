@@ -18,6 +18,7 @@ struct Scripted {
     status: Status,
     runs: Vec<RunLimit>,
     inputs: Vec<InputEvent>,
+    input_attempts: usize,
     changes: Vec<(SlotId, MediaAction)>,
     outputs: Vec<Outputs>,
     next: Vec<Result<Stop, Error>>,
@@ -32,6 +33,10 @@ struct Scripted {
     pixels: Vec<u32>,
     /// The picture's width and height; `pixels` holds that many.
     size: (u32, u32),
+    aspect: (u32, u32),
+    frame_serial: Option<u64>,
+    no_picture: bool,
+    input_failure: Option<ErrorKind>,
     /// The visible part the frame states, if any.
     visible: Option<FrameArea>,
     /// Drain a 1 kHz tone at the described rate, exactly `now × rate / clock`
@@ -48,11 +53,7 @@ fn scripted() -> Box<Scripted> {
             .with_audio(Some(AudioDescription::new(Rate::new(48_000, 1))))
             .with_inputs(vec![
                 InputPortDescription::new(PortId(3), InputKind::Keyboard, "Keyboard"),
-                InputPortDescription::new(
-                    PortId(4),
-                    InputKind::RelativePointer { buttons: 3 },
-                    "Mouse",
-                ),
+                InputPortDescription::new(PortId(4), InputKind::relative_pointer(3), "Mouse"),
             ])
             .with_slots(vec![
                 SlotDescription::new(SlotId(7), SlotKind::FixedDisk, "C:", false),
@@ -64,6 +65,7 @@ fn scripted() -> Box<Scripted> {
         status: Status::Ready,
         runs: Vec::new(),
         inputs: Vec::new(),
+        input_attempts: 0,
         changes: Vec::new(),
         outputs: Vec::new(),
         next: Vec::new(),
@@ -76,6 +78,10 @@ fn scripted() -> Box<Scripted> {
         active: Vec::new(),
         pixels: vec![0],
         size: (1, 1),
+        aspect: (4, 3),
+        frame_serial: None,
+        no_picture: false,
+        input_failure: None,
         visible: None,
         tone: false,
         handed: 0,
@@ -117,8 +123,17 @@ impl Machine for Scripted {
     }
 
     fn frame(&mut self, _display: DisplayId) -> Result<Frame<'_>, Error> {
+        if self.no_picture {
+            return Err(Error::new(ErrorKind::Usage, "no picture yet"));
+        }
         self.pixels[0] = self.now as u32;
-        let frame = Frame::new(self.size.0, self.size.1, &self.pixels, (4, 3), self.now);
+        let frame = Frame::new(
+            self.size.0,
+            self.size.1,
+            &self.pixels,
+            self.aspect,
+            self.frame_serial.unwrap_or(self.now),
+        );
         Ok(match self.visible {
             Some(visible) => frame.with_visible(visible),
             None => frame,
@@ -153,8 +168,16 @@ impl Machine for Scripted {
         self.outputs.push(outputs);
     }
 
-    fn input(&mut self, event: InputEvent) {
+    fn input(&mut self, event: InputEvent) -> Result<(), Error> {
+        self.input_attempts += 1;
+        if let Some(kind) = self.input_failure {
+            return Err(Error::new(kind, "input refused"));
+        }
+        if matches!(self.status, Status::Off | Status::Failed | Status::Finished) {
+            return Err(Error::new(ErrorKind::Usage, "terminal input"));
+        }
         self.inputs.push(event);
+        Ok(())
     }
 
     fn slot_states(&mut self) -> Vec<SlotState> {
@@ -201,6 +224,8 @@ impl Machine for Scripted {
     }
 
     fn finish(&mut self) -> Result<Finished, Error> {
+        assert!(!matches!(self.status, Status::Failed | Status::Finished));
+        self.status = Status::Finished;
         self.finished += 1;
         Ok(Finished::new().with_warnings(self.finish_warnings.clone()))
     }
@@ -243,12 +268,7 @@ fn a_session_runs_one_millisecond_chunks_to_the_paced_target_and_keeps_the_pictu
     assert_eq!(picture.pixels, [10_000]);
     assert_eq!(
         picture.visible,
-        FrameArea {
-            x: 0,
-            y: 0,
-            width: 1,
-            height: 1
-        },
+        FrameArea::new(0, 0, 1, 1),
         "a machine that states nothing has the whole picture visible"
     );
     assert!(session.running);
@@ -317,12 +337,7 @@ fn the_picture_carries_the_visible_part_the_machine_states() {
     let mut machine = scripted();
     machine.size = (4, 2);
     machine.pixels = vec![0; 8];
-    let visible = FrameArea {
-        x: 1,
-        y: 0,
-        width: 2,
-        height: 2,
-    };
+    let visible = FrameArea::new(1, 0, 2, 2);
     machine.visible = Some(visible);
     let mut session = session(machine);
     session.advance_fully(ms(1)).unwrap();
@@ -395,7 +410,9 @@ fn media_keys_change_the_first_and_second_removable_slot_and_never_reach_the_gue
         .inputs
         .iter()
         .map(|event| match event {
-            InputEvent::Key { port, key, state } => (*port, key.0, *state),
+            InputEvent::Key {
+                port, key, state, ..
+            } => (*port, key.0, *state),
             other => panic!("{other:?}"),
         })
         .collect();
@@ -430,26 +447,10 @@ fn focus_loss_releases_everything_once_and_capture_forwards_counts_and_buttons()
     assert_eq!(
         session.machine().inputs,
         [
-            InputEvent::PointerMotion {
-                port: pointer,
-                dx: 1,
-                dy: 2
-            },
-            InputEvent::PointerMotion {
-                port: pointer,
-                dx: 1,
-                dy: 1
-            },
-            InputEvent::PointerButton {
-                port: pointer,
-                button: 1,
-                pressed: true
-            },
-            InputEvent::Key {
-                port: PortId(3),
-                key: unemu_core_api::Key::A,
-                state: KeyState::Pressed
-            },
+            InputEvent::pointer_motion(pointer, 1, 2),
+            InputEvent::pointer_motion(pointer, 1, 1),
+            InputEvent::pointer_button(pointer, 1, true),
+            InputEvent::key(PortId(3), unemu_core_api::Key::A, KeyState::Pressed),
             InputEvent::ReleaseAll,
         ]
     );
@@ -467,18 +468,42 @@ fn focus_loss_releases_everything_once_and_capture_forwards_counts_and_buttons()
     assert_eq!(
         inputs[inputs.len() - 2..],
         [
-            InputEvent::PointerButton {
-                port: pointer,
-                button: 2,
-                pressed: true
-            },
-            InputEvent::PointerButton {
-                port: pointer,
-                button: 2,
-                pressed: false
-            },
+            InputEvent::pointer_button(pointer, 2, true),
+            InputEvent::pointer_button(pointer, 2, false),
         ]
     );
+}
+
+#[test]
+fn a_one_button_relative_pointer_filters_unsupported_buttons() {
+    let mut machine = scripted();
+    machine.description.inputs = vec![InputPortDescription::new(
+        PortId(4),
+        InputKind::relative_pointer(1),
+        "Mouse",
+    )];
+    let mut session = session(machine);
+    session.mouse.pointer_inside(true);
+    session.mouse_button_with_grab(MouseButton::Left, Pressed, || Ok(()));
+    session.mouse_button_with_grab(MouseButton::Left, Released, || Ok(()));
+    for button in [MouseButton::Right, MouseButton::Middle] {
+        session.mouse_button_with_grab(button, Pressed, || Ok(()));
+        session.mouse_button_with_grab(button, Released, || Ok(()));
+    }
+    session.mouse_motion(2.0, -3.0);
+    session.mouse_button_with_grab(MouseButton::Left, Pressed, || Ok(()));
+    session.release_pointer();
+    assert_eq!(
+        session.machine.inputs,
+        [
+            InputEvent::pointer_motion(PortId(4), 2, 3),
+            InputEvent::pointer_button(PortId(4), 0, true),
+            InputEvent::pointer_button(PortId(4), 0, false),
+        ]
+    );
+    assert_eq!(session.machine.input_attempts, 3);
+    assert!(session.running);
+    assert!(session.error.is_none());
 }
 
 #[test]
@@ -582,20 +607,8 @@ fn two_pads() -> Box<Scripted> {
         PadControl::Select,
     ];
     machine.description = machine.description.clone().with_inputs(vec![
-        InputPortDescription::new(
-            PortId(6),
-            InputKind::Pad {
-                controls: all.clone(),
-            },
-            "Controller 2",
-        ),
-        InputPortDescription::new(
-            PortId(2),
-            InputKind::Pad {
-                controls: all[..6].to_vec(),
-            },
-            "Controller 1",
-        ),
+        InputPortDescription::new(PortId(6), InputKind::pad(all.clone()), "Controller 2"),
+        InputPortDescription::new(PortId(2), InputKind::pad(all[..6].to_vec()), "Controller 1"),
     ]);
     machine
 }
@@ -610,11 +623,7 @@ fn bound(extra: &[(usize, PadControl, Key)]) -> PadBindings {
 }
 
 fn pad(port: u8, control: PadControl, pressed: bool) -> InputEvent {
-    InputEvent::Pad {
-        port: PortId(port),
-        control,
-        pressed,
-    }
+    InputEvent::pad(PortId(port), control, pressed)
 }
 
 #[test]
@@ -701,9 +710,7 @@ fn a_machine_with_a_keyboard_gets_bound_keys_as_todays_key_events() {
     let mut inputs = machine.description.inputs.clone();
     inputs.push(InputPortDescription::new(
         PortId(5),
-        InputKind::Pad {
-            controls: vec![PadControl::A, PadControl::Start],
-        },
+        InputKind::pad(vec![PadControl::A, PadControl::Start]),
         "Controller",
     ));
     machine.description = machine.description.clone().with_inputs(inputs);
@@ -725,7 +732,9 @@ fn a_machine_with_a_keyboard_gets_bound_keys_as_todays_key_events() {
             .inputs
             .iter()
             .map(|event| match event {
-                InputEvent::Key { port, key, state } => (*port, key.0, *state),
+                InputEvent::Key {
+                    port, key, state, ..
+                } => (*port, key.0, *state),
                 other => panic!("{other:?}"),
             })
             .collect();
@@ -795,4 +804,215 @@ fn a_reset_puts_the_queued_media_changes_in_first() {
     assert!(session.media_events.is_empty());
     assert_eq!(session.machine().changes, [(SlotId(8), MediaAction::Next)]);
     assert_eq!(session.machine().changes_at_reset, [1]);
+}
+
+#[test]
+fn picture_metadata_refreshes_with_an_unchanged_pixel_serial() {
+    let mut machine = scripted();
+    machine.size = (4, 2);
+    machine.pixels = vec![0; 8];
+    machine.frame_serial = Some(7);
+    let mut session = session(machine);
+    session.copy_picture().unwrap();
+    session.machine.aspect = (16, 9);
+    session.machine.visible = Some(FrameArea::new(1, 0, 2, 2));
+    session.copy_picture().unwrap();
+    let picture = session.picture().unwrap();
+    assert_eq!(picture.aspect, (16, 9));
+    assert_eq!(picture.visible, FrameArea::new(1, 0, 2, 2));
+    assert_eq!(picture.serial, 7);
+    assert_eq!(
+        session.picture_copies, 1,
+        "metadata alone does not copy pixels"
+    );
+}
+
+#[test]
+fn geometry_changes_copy_pixels_even_with_an_unchanged_serial() {
+    let mut machine = scripted();
+    machine.frame_serial = Some(7);
+    let mut session = session(machine);
+    session.copy_picture().unwrap();
+    session.machine.size = (2, 1);
+    session.machine.pixels = vec![0, 42];
+    session.copy_picture().unwrap();
+    let picture = session.picture().unwrap();
+    assert_eq!((picture.width, picture.height), (2, 1));
+    assert_eq!(picture.pixels, [0, 42]);
+    assert_eq!(session.picture_copies, 2);
+}
+
+#[test]
+fn usage_before_the_first_completed_picture_is_allowed() {
+    let mut machine = scripted();
+    machine.no_picture = true;
+    let mut session = session(machine);
+    session.advance_fully(ms(1)).unwrap();
+    assert!(session.picture().is_none());
+    session.machine.no_picture = false;
+    session.advance_fully(ms(2)).unwrap();
+    assert!(session.picture().is_some());
+}
+
+#[test]
+fn loading_a_state_before_the_first_picture_discards_a_later_cached_picture() {
+    use std::rc::Rc;
+    use unemu_core_api::test_support::{MemoryStorage, ScriptedMachine};
+
+    let machine = ScriptedMachine::new(Rc::new(MemoryStorage::new())).without_initial_picture();
+    let mut session = Session::new(Box::new(machine), DisplayId(0), &mut io::sink()).unwrap();
+    let mut state = Vec::new();
+    session.save_state(&mut state).unwrap();
+    session.advance_fully(ms(1)).unwrap();
+    assert!(session.picture().is_some());
+
+    session.load_state(&mut state.as_slice(), ms(1)).unwrap();
+    assert!(session.picture().is_none());
+    assert_eq!(session.machine().now(), Ticks(0));
+    assert!(session.running);
+    assert!(session.error.is_none());
+    session.copy_picture().unwrap();
+    assert!(session.picture().is_none());
+    session.advance_fully(ms(2)).unwrap();
+    assert!(session.picture().is_some());
+    assert!(session.machine().now().0 > 0);
+}
+
+#[test]
+fn input_refusals_release_capture_without_delivering_releases() {
+    for (status, kind) in [
+        (Status::Ready, ErrorKind::Usage),
+        (Status::Ready, ErrorKind::Unsupported),
+        (Status::Off, ErrorKind::Usage),
+        (Status::Finished, ErrorKind::Usage),
+    ] {
+        for queued_pointer in [false, true] {
+            let mut session = session(scripted());
+            session.mouse.pointer_inside(true);
+            session.mouse_button_with_grab(MouseButton::Left, Pressed, || Ok(()));
+            session.mouse_button_with_grab(MouseButton::Left, Released, || Ok(()));
+            session.mouse_button_with_grab(MouseButton::Left, Pressed, || Ok(()));
+            assert!(session.mouse.captured());
+            assert_eq!(session.machine.input_attempts, 1);
+            session.machine.status = status;
+            session.machine.input_failure = Some(kind);
+            if queued_pointer {
+                session.mouse.motion(1.0, 0.0);
+                session.mouse.motion(2.0, 0.0);
+                session.forward_pointer();
+            } else {
+                session.guest_key(KeyCode::KeyA, Pressed);
+            }
+            assert!(!session.mouse.captured());
+            assert!(!session.running);
+            assert!(!session.halted);
+            assert_eq!(session.machine.status(), status);
+            assert_eq!(session.machine.input_attempts, 2);
+            assert!(session.mouse.take_events().is_empty());
+            assert_eq!(session.error.is_some(), status == Status::Ready);
+
+            session.advance_fully(ms(20)).unwrap();
+            session.guest_key(KeyCode::KeyA, Released);
+            session.mouse_motion(3.0, 0.0);
+            session.release_pointer();
+            assert!(!session.mouse.captured());
+            assert_eq!(session.machine.input_attempts, 2);
+            assert!(session.machine.runs.is_empty());
+        }
+    }
+}
+
+#[test]
+fn terminal_input_refusals_stop_cleanly_without_retrying_or_running() {
+    for status in [Status::Off, Status::Finished] {
+        let mut session = session(scripted());
+        session.machine.status = status;
+        session.guest_key(KeyCode::KeyA, Pressed);
+        assert_eq!(session.machine.input_attempts, 1);
+        assert!(!session.running);
+        assert!(!session.halted);
+        assert!(session.error.is_none());
+        session.advance_fully(ms(20)).unwrap();
+        session.guest_key(KeyCode::KeyA, Released);
+        assert_eq!(session.machine.input_attempts, 1);
+        assert!(session.machine.inputs.is_empty());
+        assert!(session.machine.runs.is_empty());
+        assert_eq!(session.machine.finished, 0);
+    }
+}
+
+#[test]
+fn other_input_refusals_are_reported_through_session_error() {
+    for (status, kind) in [
+        (Status::Failed, ErrorKind::Usage),
+        (Status::Ready, ErrorKind::Unsupported),
+    ] {
+        let mut session = session(scripted());
+        session.machine.status = status;
+        session.machine.input_failure = Some(kind);
+        session.guest_key(KeyCode::KeyA, Pressed);
+        assert!(!session.running);
+        assert!(!session.halted);
+        let error = session
+            .error
+            .as_ref()
+            .unwrap()
+            .downcast_ref::<Error>()
+            .unwrap();
+        assert_eq!(error.kind, kind);
+        session.advance_fully(ms(20)).unwrap();
+        assert!(session.machine.runs.is_empty());
+    }
+}
+
+#[test]
+fn externally_finished_sessions_keep_the_last_picture_and_disable_controls() {
+    let mut session = session(scripted());
+    session.advance_fully(ms(1)).unwrap();
+    let serial = session.picture().unwrap().serial;
+    session.machine.status = Status::Finished;
+    assert!(!session.takes_media());
+    assert_eq!(
+        session.save_state(&mut Vec::new()).unwrap_err().kind,
+        ErrorKind::Usage
+    );
+    session.advance_fully(ms(2)).unwrap();
+    assert!(!session.running);
+    assert!(!session.halted);
+    assert!(session.error.is_none());
+    assert_eq!(session.picture().unwrap().serial, serial);
+    assert_eq!(session.machine.runs.len(), 1);
+    session.finish(&mut Vec::new()).unwrap();
+    assert_eq!(
+        session.machine.finished, 0,
+        "a clean terminal machine is not finished twice"
+    );
+}
+
+#[test]
+fn session_finish_is_repeatable_while_core_finish_runs_once() {
+    let mut session = session(scripted());
+    session.finish(&mut Vec::new()).unwrap();
+    session.finish(&mut Vec::new()).unwrap();
+    assert!(!session.running);
+    assert_eq!(session.machine.status(), Status::Finished);
+    assert_eq!(session.machine.finished, 1);
+}
+
+#[test]
+fn construction_respects_halted_and_terminal_machine_statuses() {
+    for status in [
+        Status::Halted,
+        Status::Off,
+        Status::Failed,
+        Status::Finished,
+    ] {
+        let mut machine = scripted();
+        machine.status = status;
+        let mut session = session(machine);
+        assert!(!session.running);
+        assert_eq!(session.halted, status == Status::Halted);
+        session.advance_fully(ms(1)).unwrap();
+        assert!(session.machine.runs.is_empty());
+    }
 }
